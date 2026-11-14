@@ -1,0 +1,271 @@
+import { useState, useEffect, useRef } from "react";
+import { View, Text, TouchableOpacity, Animated } from "react-native";
+import { useMemo } from "react";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useTheme } from "../context/ThemeContext";
+import { SCREENS } from "../utils/constants";
+import { getActiveUser } from "../services/authService";
+import { markPresentToday } from "../services/attendanceService";
+import { guardarEscaneoEnLaNube } from "../services/asistenciaAlumno";
+import { validarQr } from "../qr/qrDinamico";
+
+export default function QrScannerScreen({ navigation }) {
+  const { colors } = useTheme();
+  const [permission, requestPermission] = useCameraPermissions();
+  const [scanned, setScanned] = useState(false);
+  const [scannedData, setScannedData] = useState(null);
+  const [registro, setRegistro] = useState(null); // asistencia del alumno registrada
+  const [yaMarcada, setYaMarcada] = useState(false);
+  const [rechazo, setRechazo] = useState(null); // motivo de rechazo del QR dinámico
+  const [nube, setNube] = useState(null); // ¿quedó guardado en Firestore?
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+    animateScanLine();
+  }, []);
+
+  const animateScanLine = () => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(scaleAnim, { toValue: 1.2, duration: 1500, useNativeDriver: true }),
+        Animated.timing(scaleAnim, { toValue: 1, duration: 1500, useNativeDriver: true }),
+      ])
+    ).start();
+  };
+
+  const handleBarCodeScanned = ({ type, data }) => {
+    if (scanned) return;
+    setScanned(true);
+    setScannedData(data);
+
+    // El alumno se marca presente solo si el QR de la entrada es válido
+    // (firma correcta, de hoy, hora vigente y en horario de clase de SU curso)
+    const user = getActiveUser();
+    if (user?.role === "alumno") {
+      const res = validarQr(data, user);
+      if (res.ok) {
+        // res.periodo trae el bloque de clase (inicio/materia): con él el
+        // servicio decide si fue "presente" o "llegada tarde" (tolerancia 10 min).
+        const reg = markPresentToday(user, res.periodo);
+        setRegistro(reg);
+        setYaMarcada(!!reg?.ya);
+        setRechazo(null);
+        setNube(null);
+        // Y en paralelo lo replica a `asistencias` en Firestore, que es el
+        // registro oficial (lo que sobrevive reinicios y ven preceptor/docente).
+        // Si no hay sesión QR abierta o no hay red, el alumno sigue marcado en
+        // local y el motivo queda visible abajo.
+        guardarEscaneoEnLaNube({ user, periodo: res.periodo })
+          .then(setNube)
+          .catch(() =>
+            setNube({ ok: false, motivo: "No se pudo guardar en el sistema" })
+          );
+      } else {
+        setRegistro(null);
+        setRechazo(res.motivo);
+        setNube(null);
+      }
+    } else {
+      setRegistro(null);
+      setRechazo("Solo los alumnos registran asistencia escaneando el QR");
+      setNube(null);
+    }
+  };
+
+  const handleScanAgain = () => {
+    setScanned(false);
+    setScannedData(null);
+    setRechazo(null);
+    setNube(null);
+  };
+
+  // La pestaña QR no tiene historial atrás: si no se puede "goBack", volvemos a Home
+  const handleBack = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate(SCREENS.HOME);
+    }
+  };
+
+  const s = useMemo(() => ({
+    container: { flex: 1, backgroundColor: colors.black },
+    camera: { flex: 1 },
+    overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "space-between" },
+    header: {
+      flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+      paddingTop: 50, paddingHorizontal: 20,
+    },
+    backButton: { padding: 8 },
+    backText: { color: colors.white, fontSize: 16, fontWeight: "600" },
+    headerTitle: { color: colors.white, fontSize: 18, fontWeight: "700" },
+    placeholder: { width: 80 },
+    scanArea: {
+      width: 250, height: 250, alignSelf: "center",
+      borderWidth: 2, borderColor: "transparent",
+    },
+    cornerTL: {
+      position: "absolute", top: -2, left: -2,
+      width: 30, height: 30,
+      borderTopWidth: 4, borderLeftWidth: 4, borderColor: colors.secondary,
+    },
+    cornerTR: {
+      position: "absolute", top: -2, right: -2,
+      width: 30, height: 30,
+      borderTopWidth: 4, borderRightWidth: 4, borderColor: colors.secondary,
+    },
+    cornerBL: {
+      position: "absolute", bottom: -2, left: -2,
+      width: 30, height: 30,
+      borderBottomWidth: 4, borderLeftWidth: 4, borderColor: colors.secondary,
+    },
+    cornerBR: {
+      position: "absolute", bottom: -2, right: -2,
+      width: 30, height: 30,
+      borderBottomWidth: 4, borderRightWidth: 4, borderColor: colors.secondary,
+    },
+    scanLine: {
+      position: "absolute", top: "50%", alignSelf: "center",
+      width: 220, height: 2, backgroundColor: colors.secondary,
+      opacity: 0.8,
+    },
+    hint: {
+      color: colors.white, textAlign: "center", fontSize: 14,
+      paddingBottom: 60, paddingHorizontal: 40,
+    },
+    resultContainer: {
+      backgroundColor: "rgba(0,0,0,0.8)", marginHorizontal: 30,
+      borderRadius: 16, padding: 20, alignItems: "center", marginBottom: 40,
+    },
+    resultTitle: { color: colors.white, fontSize: 14, fontWeight: "600", marginBottom: 8 },
+    successIcon: { marginBottom: 8 },
+    resultData: {
+      color: colors.secondary, fontSize: 14, fontWeight: "500",
+      textAlign: "center", marginBottom: 16,
+    },
+    nubeLine: { fontSize: 12, textAlign: "center", lineHeight: 17 },
+    button: {
+      backgroundColor: colors.primary, paddingVertical: 12, paddingHorizontal: 24,
+      borderRadius: 12, alignSelf: "center",
+    },
+    buttonText: { color: colors.white, fontWeight: "700", fontSize: 14 },
+    message: { color: colors.text, fontSize: 16, textAlign: "center", marginTop: 40 },
+  }), [colors]);
+
+  if (!permission) {
+    return (
+      <View style={s.container}>
+        <Text style={s.message}>Solicitando permiso de cámara...</Text>
+      </View>
+    );
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={s.container}>
+        <View style={{ paddingTop: 50, paddingHorizontal: 20 }}>
+          <TouchableOpacity onPress={handleBack} style={s.backButton}>
+            <Text style={s.backText}>← Volver</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={s.message}>Sin acceso a la cámara</Text>
+        <TouchableOpacity style={s.button} onPress={requestPermission}>
+          <Text style={s.buttonText}>Conceder permiso</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={s.container}>
+      <CameraView
+        style={s.camera}
+        facing="back"
+        onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+        barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+      >
+        <View style={s.overlay}>
+          <View style={s.header}>
+            <TouchableOpacity onPress={handleBack} style={s.backButton}>
+              <Text style={s.backText}>← Volver</Text>
+            </TouchableOpacity>
+            <Text style={s.headerTitle}>Escanear QR</Text>
+            <View style={s.placeholder} />
+          </View>
+
+          <View style={s.scanArea}>
+            <View style={s.cornerTL} />
+            <View style={s.cornerTR} />
+            <View style={s.cornerBL} />
+            <View style={s.cornerBR} />
+          </View>
+
+          <Animated.View style={[s.scanLine, { transform: [{ scaleY: scaleAnim }] }]} />
+
+          {scanned && scannedData ? (
+            <View style={s.resultContainer}>
+              {registro ? (
+                <View>
+                  <View style={s.successIcon}>
+                    <MaterialCommunityIcons
+                      name="check-circle"
+                      size={44}
+                      color={colors.success}
+                    />
+                  </View>
+                  <Text style={s.resultTitle}>
+                    {yaMarcada
+                      ? "Tu asistencia de hoy ya estaba registrada"
+                      : "¡Asistencia registrada!"}
+                  </Text>
+                  <Text style={s.resultData}>
+                    {registro.status === "tarde" ? "⏰ Llegada tarde" : "Presente"} · {registro.hora}
+                    {registro.bloque ? ` · ${registro.bloque}` : ""}
+                    {registro.curso ? `\n${registro.curso} · ${registro.alumno}` : ""}
+                  </Text>
+                  {nube && (
+                    <Text
+                      style={[
+                        s.nubeLine,
+                        { color: nube.ok ? colors.success : colors.warning },
+                      ]}
+                    >
+                      {nube.ok
+                        ? "☁︎ Guardado en el sistema"
+                        : `⚠︎ ${nube.motivo}`}
+                    </Text>
+                  )}
+                </View>
+              ) : rechazo ? (
+                <View>
+                  <View style={s.successIcon}>
+                    <MaterialCommunityIcons
+                      name="close-circle"
+                      size={44}
+                      color={colors.error}
+                    />
+                  </View>
+                  <Text style={s.resultTitle}>QR no válido</Text>
+                  <Text style={s.resultData}>{rechazo}</Text>
+                </View>
+              ) : (
+                <View>
+                  <Text style={s.resultTitle}>Código escaneado:</Text>
+                  <Text style={s.resultData}>{scannedData}</Text>
+                </View>
+              )}
+              <TouchableOpacity style={s.button} onPress={handleScanAgain}>
+                <Text style={s.buttonText}>Escanear otro</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={s.hint}>Coloca el código QR dentro del recuadro</Text>
+          )}
+        </View>
+      </CameraView>
+    </View>
+  );
+}
