@@ -535,14 +535,59 @@ service cloud.firestore {
       allow create: if esProfesor() && esMateriaDelCurso(request.resource.data.materiaId, request.resource.data.cursoId);
       // El profesor solo edita los campos calificables: alumnoId/materiaId/cursoId
       // quedan inmutables (no puede mover una nota de alumno, materia o curso).
+      // `materia`/`codigo` entran al allowlist porque el cliente siempre reenvía
+      // el documento completo y ambos se derivan de materiaId: si la institución
+      // renombrara la materia, el guardado dejaría de fallar por un dato de
+      // display que el profesor no puede falsificar (sale de su propia materia).
       allow update: if esProfesor()
         && esMateriaDelCurso(resource.data.materiaId, resource.data.cursoId)
         && request.resource.data.materiaId == resource.data.materiaId
         && request.resource.data.cursoId == resource.data.cursoId
         && request.resource.data.alumnoId == resource.data.alumnoId
         && request.resource.data.diff(resource.data).affectedKeys()
-           .hasOnly(['nota', 'tipo', 'descripcion', 'periodo', 'fecha', 'observaciones', 'actualizadoEn']);
+           .hasOnly(['nota', 'tipo', 'descripcion', 'periodo', 'fecha', 'observaciones',
+              'materia', 'codigo', 'actualizadoEn']);
       allow delete: if esProfesor() && esMateriaDelCurso(resource.data.materiaId, resource.data.cursoId);
+    }
+
+    // Informes de avance TED / TEP / TEA por materia (Boletín Virtual):
+    //   · el DOCENTE de la materia puede cargarlos y editarlos (mismo criterio
+    //     que las notas: esMateriaDelCurso);
+    //   · el PRECEPTOR DEL CURSO también (no carga notas, pero sí el informe
+    //     de avance de SU curso);
+    //   · el alumno lee el suyo propio (en su boletín aparece la sigla y la
+    //     descripción, nunca el rango numérico).
+    match /informes/{informeId} {
+      allow read: if esMiAlumno(resource.data.alumnoId) || esStaff();
+      allow create: if request.resource.data.clasif in ['TED', 'TEP', 'TEA']
+        && request.resource.data.alumnoId is string
+        && request.resource.data.cursoId is string
+        && request.resource.data.materiaId is string
+        && request.resource.data.periodo is string
+        && ((esProfesor()
+             && esMateriaDelCurso(request.resource.data.materiaId, request.resource.data.cursoId))
+            || (esPreceptorDelCurso(request.resource.data.cursoId)
+                && datosMateria(request.resource.data.materiaId).cursoId == request.resource.data.cursoId))
+        && request.resource.data.keys().hasOnly(['alumnoId', 'cursoId', 'materiaId', 'codigo',
+              'materia', 'periodo', 'clasif', 'desc', 'autor', 'autorRol', 'fecha',
+              'actualizadoEn']);
+      // Identidad del informe inmutable; solo se edita el contenido, y el
+      // contenido sigue teniendo que ser una clasificación válida (chequeo
+      // también sobre request: un update no puede pisarla por una inventada).
+      allow update: if request.resource.data.clasif in ['TED', 'TEP', 'TEA']
+        && ((esProfesor()
+             && esMateriaDelCurso(resource.data.materiaId, resource.data.cursoId))
+            || (esPreceptorDelCurso(resource.data.cursoId)
+                && datosMateria(resource.data.materiaId).cursoId == resource.data.cursoId))
+        && request.resource.data.alumnoId == resource.data.alumnoId
+        && request.resource.data.materiaId == resource.data.materiaId
+        && request.resource.data.cursoId == resource.data.cursoId
+        && request.resource.data.periodo == resource.data.periodo
+        && request.resource.data.diff(resource.data).affectedKeys()
+           .hasOnly(['clasif', 'desc', 'autor', 'autorRol', 'fecha', 'materia', 'actualizadoEn']);
+      allow delete: if esGestion()
+        || esPreceptorDelCurso(resource.data.cursoId)
+        || esDocenteDeMateria(resource.data.materiaId);
     }
 
     match /examenes/{examenId} {
