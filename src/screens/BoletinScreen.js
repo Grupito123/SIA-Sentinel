@@ -9,6 +9,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { getActiveUser } from '../services/authService';
 import { getNotasAlumno, getInformesAlumno } from '../services/gradesService';
+import { notasDeAlumno, informesDeAlumno } from '../services/notasService';
+import { codigoDeMateria } from '../utils/colegio';
 import CargaNotas from '../components/CargaNotas';
 import Header from '../components/Header';
 import {
@@ -83,6 +85,10 @@ export default function BoletinScreen() {
   const active = getActiveUser() || {};
   const tieneCurso = !!active.curso;
   const esDocente = active.role === 'docente';
+  const esPreceptor = active.role === 'preceptor';
+  // El staff (docente y preceptor) CARGA notas/informes en vez de leer el
+  // boletín: las tarjetas de lectura son para alumno (y padres).
+  const esStaff = esDocente || esPreceptor;
 
   // Refresca al volver de Editar perfil (curso o materias cambiados)
   const [, setTick] = useState(0);
@@ -92,9 +98,27 @@ export default function BoletinScreen() {
     }, [])
   );
 
-  // Sin curso propio (docente): permite buscar cualquier curso
-  const [pickCurso, setPickCurso] = useState('4°');
-  const [pickDivision, setPickDivision] = useState('2');
+  // Primer curso del staff (cursos a cargo confirmados en la BD): el docente
+  // y el preceptor arrancan viendo UNO DE LOS SUYOS, no un curso al azar.
+  const primerCursoStaff = (() => {
+    if (tieneCurso || !esStaff) return null;
+    const ids = (Array.isArray(active.cursos) ? active.cursos : [])
+      .map((c) => c?.id || `${c?.curso || ''}${c?.division || ''}`)
+      .filter(Boolean);
+    ids.sort((a, b) => a.localeCompare(b, 'es'));
+    return ids[0] || null;
+  })();
+
+  // Sin curso propio (docente/preceptor): permite buscar cualquier curso
+  const [pickCurso, setPickCurso] = useState(() => {
+    if (!primerCursoStaff) return '4°';
+    const [anio] = primerCursoStaff.split('°');
+    return `${anio}°`;
+  });
+  const [pickDivision, setPickDivision] = useState(() => {
+    if (!primerCursoStaff) return '2';
+    return primerCursoStaff.split('°')[1] || '2';
+  });
   const [cuatri, setCuatri] = useState(1);
   // Materia abierta en la lista (el alumno ve el detalle: TP / eval / exp + informe)
   const [materiaAbierta, setMateriaAbierta] = useState(null);
@@ -114,13 +138,40 @@ export default function BoletinScreen() {
   const semilla = `${active.email || active.nombre || 'invitado'}|${cursoDiv}`;
   const rowsBase = notasDe(semilla, materias, cuatri);
 
+  // Notas e informes REALES de la nube (Firestore): el docente y el preceptor
+  // los cargan desde su pantalla y acá se ven. Se releen al enfocar y al
+  // cambiar de curso o cuatrimestre; sin nube (o sin permiso) se conserva lo
+  // local/demo de antes. Clave por CÓDIGO de materia (PROG, MATE…), que es
+  // igual en la malla y en la base aunque los nombres difieran.
+  const [nubeNotas, setNubeNotas] = useState({});
+  const [nubeInformes, setNubeInformes] = useState({});
+  useFocusEffect(
+    useCallback(() => {
+      const alumnoId = active.alumnoId;
+      if (esStaff || !alumnoId || !cursoDiv) return undefined;
+      let vivo = true;
+      Promise.all([
+        notasDeAlumno({ cursoId: cursoDiv, alumnoId, cuatri }).catch(() => null),
+        informesDeAlumno({ cursoId: cursoDiv, alumnoId, cuatri }).catch(() => null),
+      ]).then(([notasAlu, informesAlu]) => {
+        if (!vivo) return;
+        if (notasAlu) setNubeNotas(notasAlu);
+        if (informesAlu) setNubeInformes(informesAlu);
+      });
+      return () => {
+        vivo = false;
+      };
+    }, [active.alumnoId, cursoDiv, cuatri, esStaff])
+  );
+
   // Notas cargadas por los docentes (TP / evaluaciones / exposiciones)
   // reemplazan a las demo de cada materia. La nota de la materia = promedio.
   const guardadas = active.email
     ? getNotasAlumno({ cursoDiv, cuatri, alumnoId: active.email })
     : {};
   const rows = rowsBase.map((r) => {
-    const componentes = guardadas[r.materia] || r.componentes || null;
+    const codigo = codigoDeMateria(r.materia);
+    const componentes = nubeNotas[codigo] || guardadas[r.materia] || r.componentes || null;
     const nota = promedioDe(componentes);
     const estado = nota == null ? 'pendiente' : nota >= 6 ? 'aprobada' : 'libre';
     return { ...r, componentes, nota, estado };
@@ -130,9 +181,14 @@ export default function BoletinScreen() {
   // Informes de avance por materia que cargaron los docentes: el alumno ve la
   // sigla y la descripción… NUNCA la nota numérica equivalente (eso lo tiene
   // sólo el docente para cargar con criterio).
-  const informesAlumno = active.email
+  const informesLocal = active.email
     ? getInformesAlumno({ cursoDiv, cuatri, alumnoId: active.email })
     : {};
+  const informesAlumno = {};
+  rowsBase.forEach((r) => {
+    const inf = nubeInformes[codigoDeMateria(r.materia)] || informesLocal[r.materia];
+    if (inf) informesAlumno[r.materia] = inf;
+  });
   const informesLista = rows
     .filter((r) => informesAlumno[r.materia])
     .map((r) => ({ materia: r.materia, ...informesAlumno[r.materia] }));
@@ -184,8 +240,8 @@ export default function BoletinScreen() {
                 ? active.role === 'alumno'
                   ? `Boletín de ${nombreAlumno || 'alumno'}`
                   : `Curso a cargo: ${nombreAlumno || 'Preceptoría'}`
-                : esDocente
-                ? `Cargá notas e informes de ${cursoDiv}`
+                : esStaff
+                ? `Cargá ${esDocente ? 'notas e informes' : 'informes'} de ${cursoDiv}`
                 : 'Elegí un curso para ver su boletín'}
             </Text>
           </View>
@@ -256,25 +312,19 @@ export default function BoletinScreen() {
           })}
         </View>
 
-        {/* Docente: carga de notas e informes por materia */}
-        {esDocente && (
+        {/* Staff: carga de notas e informes por materia (docente) o solo
+            informes (preceptor) — todo contra las materias REALES del curso */}
+        {esStaff && (
           <CargaNotas
             curso={curso}
             division={division}
             cuatri={cuatri}
-            misMaterias={
-              Array.isArray(active.cursos)
-                ? // Materias que eligió para ESTE curso (cada curso, las suyas)
-                  active.cursos.find((c) => `${c.curso}${c.division}` === `${curso}${division}`)
-                    ?.materias || []
-                : // Cuenta vieja sin cursos: la unión plana como antes
-                  active.materias || (active.materia ? [active.materia] : [])
-            }
+            modo={esDocente ? 'completo' : 'informes'}
           />
         )}
 
         {/* Informe de avance (lectura) */}
-        {!esDocente && (
+        {!esStaff && (
         <View style={[st.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <View style={st.reportHead}>
             <View style={[st.reportIcon, { backgroundColor: colors.primary + '22' }]}>
@@ -353,7 +403,7 @@ export default function BoletinScreen() {
         )}
 
         {/* Materias */}
-        {!esDocente && (
+        {!esStaff && (
         <View style={[st.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <View style={st.subjectsHead}>
             <Text style={[st.subjectsTitle, { color: colors.text }]}>Materias</Text>

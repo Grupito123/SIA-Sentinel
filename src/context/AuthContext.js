@@ -8,6 +8,7 @@ import { courses, padres, students, subjects } from '../services/firestore';
 import { ROLES } from '../services/firestore/helpers';
 import { normalizarRol } from '../utils/roles';
 import { setActiveUser, logout as cerrarLocal } from '../services/authService';
+import { cursosDelStaff } from '../services/misAlumnos';
 
 const AuthContext = createContext(null);
 
@@ -23,6 +24,38 @@ function espejoLocal(uid, fbUser, perfil) {
   const materias = (Array.isArray(perfil?.materias) ? perfil.materias : [])
     .map((m) => (typeof m === 'string' ? m : m?.nombre))
     .filter(Boolean);
+
+  // Materias REALES del docente agrupadas por curso: el perfil de Firestore
+  // las trae como { id, nombre, cursoId } (materias.docenteId == uid) y el
+  // Boletín necesita "las de ESTE curso" sin adivinar (usuarios.cursos es
+  // null: la confirmación vive en materias/cursos, no en el perfil).
+  const materiaPorCurso = {};
+  if (Array.isArray(perfil?.materias)) {
+    perfil.materias.forEach((m) => {
+      if (!m || typeof m !== 'object' || !m.cursoId || !m.nombre) return;
+      if (!materiaPorCurso[m.cursoId]) materiaPorCurso[m.cursoId] = [];
+      if (!materiaPorCurso[m.cursoId].includes(m.nombre)) {
+        materiaPorCurso[m.cursoId].push(m.nombre);
+      }
+    });
+  }
+
+  // "cursos" del staff: el campo legacy del perfil si existe; si no, los
+  // cursos a cargo confirmados en la BD (cursos.docenteIds/preceptorIds) y
+  // los cursos en los que el docente tiene materias, en orden alfabético.
+  const idsCursos = [
+    ...new Set([
+      ...(Array.isArray(perfil?.cursosACargo) ? perfil.cursosACargo : []),
+      ...Object.keys(materiaPorCurso),
+    ]),
+  ].sort((a, b) => String(a).localeCompare(String(b), 'es'));
+  const cursos = Array.isArray(perfil?.cursos) && perfil.cursos.length
+    ? perfil.cursos
+    : idsCursos.map((id) => {
+        const [anio, division] = String(id).split('°');
+        return { id, curso: `${anio}°`, division: division ?? '', materias: materiaPorCurso[id] || [] };
+      });
+
   return {
     uid,
     role,
@@ -39,7 +72,8 @@ function espejoLocal(uid, fbUser, perfil) {
     anio: perfil?.anio ?? null,
     titulo: perfil?.titulo ?? null,
     materias,
-    cursos: Array.isArray(perfil?.cursos) && perfil.cursos.length ? perfil.cursos : [],
+    cursos,
+    materiaPorCurso,
     // Declaracion al registrarse (docente/preceptor): queda visible como
     // "pendiente" hasta que la institucion la confirme.
     cursosDeclarados: Array.isArray(perfil?.cursosDeclarados) ? perfil.cursosDeclarados : [],
@@ -115,6 +149,16 @@ export function AuthProvider({ children }) {
           enriquecido.cursoNombre = curso.nombre;
         }
       }
+    }
+
+    if (rol === ROLES.PROFESOR || rol === ROLES.PRECEPTOR) {
+      // Cursos a cargo según la BD (cursos.docenteIds / cursos.preceptorIds):
+      // es lo que el Boletín y el Perfil usan como "cursos" del staff. Se
+      // resuelve ANTES del espejo local para que la sesión arranque completa.
+      enriquecido.cursosACargo = await cursosDelStaff({
+        uid,
+        role: rol === ROLES.PROFESOR ? 'docente' : 'preceptor',
+      });
     }
 
     if (rol === ROLES.PROFESOR) {

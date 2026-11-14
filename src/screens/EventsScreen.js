@@ -179,7 +179,6 @@ export default function EventsScreen({ navigation }) {
   const { colors } = useTheme();
   const [searchText, setSearchText] = useState('');
   const [filterStatus, setFilterStatus] = useState('todos');
-  const [letterFilter, setLetterFilter] = useState('Todas');
   // Arranca en HOY: es el día que le interesan las asistencias reales del
   // staff (y la lista de ejemplo también tiene registros del día 0).
   const [selectedDate, setSelectedDate] = useState(() => todayKey());
@@ -312,8 +311,9 @@ export default function EventsScreen({ navigation }) {
         ...attendanceHistory.filter((item) => !myCourse || item.course === myCourse),
       ];
 
-  // La lista se toma por APELLIDO: el filtro de letras, el agrupado y el orden
-  // usan la inicial del apellido ("Ana Martínez" → M), no la del nombre.
+  // La lista se toma por APELLIDO: el agrupado y el orden usan la inicial del
+  // apellido ("Ana Martínez" → M), no la del nombre. El FILTRADO se hace con
+  // el buscador de arriba (apellido, nombre o curso, sin distinguir acentos).
   const apellidoDe = (name) => {
     const partes = String(name ?? '').trim().split(/\s+/);
     return partes[partes.length - 1] || '';
@@ -327,9 +327,22 @@ export default function EventsScreen({ navigation }) {
     apellidoDe(a.student).localeCompare(apellidoDe(b.student), 'es') ||
     a.student.localeCompare(b.student, 'es');
 
+  // "Alvarez" encuentra a "Álvarez", "gomez" a "Gómez": el buscador recorre
+  // el A-Z de los apellidos sin exigir tildes (mismo criterio para docentes
+  // y preceptores: la caja de búsqueda es del bloque staff).
+  const textoNormalizado = (t) =>
+    String(t ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  const buscado = textoNormalizado(searchText.trim());
+
   const filteredHistory = courseRecords.filter(item => {
-    const matchesSearch = item.student.toLowerCase().includes(searchText.toLowerCase()) ||
-      item.course.toLowerCase().includes(searchText.toLowerCase());
+    const matchesSearch =
+      !buscado ||
+      textoNormalizado(item.student).includes(buscado) ||
+      textoNormalizado(nombreParaMostrar(item)).includes(buscado) ||
+      textoNormalizado(item.course).includes(buscado);
     // "Presentes" incluye a los que llegaron tarde (asistieron igual)
     const matchesStatus =
       filterStatus === 'todos' ||
@@ -337,12 +350,11 @@ export default function EventsScreen({ navigation }) {
         ? item.status === 'presente' || item.status === 'tarde'
         : item.status === filterStatus);
     const matchesDate = item.date === selectedDate;
-    const matchesLetter = letterFilter === 'Todas' || initial(item.student) === letterFilter;
 
-    return matchesSearch && matchesStatus && matchesDate && matchesLetter;
+    return matchesSearch && matchesStatus && matchesDate;
   });
 
-  // Agrupado alfabético por inicial del APELLIDO
+  // Agrupado alfabético por inicial del APELLIDO (de A a Z en la lista)
   const grouped = (() => {
     const sorted = [...filteredHistory].sort(porApellido);
     const out = [];
@@ -357,13 +369,6 @@ export default function EventsScreen({ navigation }) {
     });
     return out;
   })();
-
-  // Letras disponibles para el filtro (de los registros del curso, del día)
-  const availableLetters = [...new Set(
-    courseRecords
-      .filter((i) => i.date === selectedDate)
-      .map((i) => initial(i.student))
-  )].sort();
 
   const getStatusConfig = (status) =>
     statusConfig[status] || {
@@ -550,35 +555,6 @@ export default function EventsScreen({ navigation }) {
     filterChipTextActive: {
       color: colors.onPrimary || colors.white,
       fontWeight: '600',
-    },
-    letterFilters: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: 6,
-      marginTop: 10,
-    },
-    letterChip: {
-      minWidth: 30,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-      borderRadius: 8,
-      alignItems: 'center',
-      backgroundColor: colors.surfaceVariant,
-      borderWidth: 1,
-      borderColor: colors.border,
-    },
-    letterChipActive: {
-      backgroundColor: colors.primary,
-      borderColor: colors.primary,
-    },
-    letterChipText: {
-      ...typography.caption,
-      fontSize: 12,
-      fontWeight: '700',
-      color: colors.textSecondary,
-    },
-    letterChipTextActive: {
-      color: colors.onPrimary || colors.white,
     },
     groupHeader: {
       paddingHorizontal: 20,
@@ -932,11 +908,7 @@ export default function EventsScreen({ navigation }) {
       <Calendar
         records={courseRecords}
         selectedDate={selectedDate}
-        onSelect={(date) => {
-          setSelectedDate(date);
-          // Si la nueva fecha no tiene registros de la letra elegida, limpiamos el filtro
-          setLetterFilter('Todas');
-        }}
+        onSelect={(date) => setSelectedDate(date)}
       />
 
       <Card style={s.summaryCard}>
@@ -980,7 +952,7 @@ export default function EventsScreen({ navigation }) {
         <View style={s.searchBox}>
           <TextInput
             style={s.searchInput}
-            placeholder="Buscar por alumno o curso..."
+            placeholder="Buscar alumno por apellido, nombre o curso..."
             placeholderTextColor={colors.textSecondary}
             value={searchText}
             onChangeText={setSearchText}
@@ -1020,29 +992,6 @@ export default function EventsScreen({ navigation }) {
               ✗ Ausentes
             </Text>
           </TouchableOpacity>
-        </View>
-
-        {/* Filtro alfabético por inicial */}
-        <View style={s.letterFilters}>
-          <TouchableOpacity
-            style={[s.letterChip, letterFilter === 'Todas' && s.letterChipActive]}
-            onPress={() => setLetterFilter('Todas')}
-          >
-            <Text style={[s.letterChipText, letterFilter === 'Todas' && s.letterChipTextActive]}>
-              Todas
-            </Text>
-          </TouchableOpacity>
-          {availableLetters.map((letter) => (
-            <TouchableOpacity
-              key={letter}
-              style={[s.letterChip, letterFilter === letter && s.letterChipActive]}
-              onPress={() => setLetterFilter(letter === letterFilter ? 'Todas' : letter)}
-            >
-              <Text style={[s.letterChipText, letterFilter === letter && s.letterChipTextActive]}>
-                {letter}
-              </Text>
-            </TouchableOpacity>
-          ))}
         </View>
       </View>
       )}

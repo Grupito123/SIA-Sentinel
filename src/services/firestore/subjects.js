@@ -28,8 +28,10 @@ export const obtenerMaterias = async ({ cursoId, docenteId, activo = true } = {}
   if (docenteId) filtros.push(where('docenteId', '==', docenteId));
   if (activo !== undefined) filtros.push(where('activo', '==', activo));
 
+  // orderBy solo cuando no hay filtros de igualdad: combinar un orden con
+  // where() exige índice compuesto (y ese índice no está desplegado).
   let consulta = query(ref(), ...filtros);
-  if (!docenteId) consulta = query(consulta, orderBy('nombre', 'asc'));
+  if (!docenteId && !cursoId) consulta = query(consulta, orderBy('nombre', 'asc'));
 
   const snapshot = await getDocs(consulta);
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));

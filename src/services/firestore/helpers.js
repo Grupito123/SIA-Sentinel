@@ -15,6 +15,7 @@ export const COLLECTIONS = {
   NOTIFICATIONS: 'notificaciones',
   AUDIT: 'auditoria',
   GRADES: 'notas',
+  PROGRESS_REPORTS: 'informes',
   EXAMS: 'examenes',
   ASSIGNMENTS: 'trabajosPracticos',
   SUBMISSIONS: 'entregasTP',

@@ -30,43 +30,53 @@ export async function cursosDelStaff(user) {
   }
 }
 
+/**
+ * Alumnos activos de UN curso, ordenados por apellido y después por nombre.
+ * Lo comparten Eventos (fila por fila) y el Boletín (la planilla que el
+ * docente/preceptor carga con notas e informes).
+ *
+ * Sin orderBy: dos filtros de igualdad no necesitan índice compuesto, y el
+ * orden se hace acá con localeCompare('es'), que ubica bien los acentos
+ * (Álvarez va con la A, no después de la Z).
+ */
+export async function alumnosDeCursoReal(cursoId) {
+  if (!cursoId) return [];
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, COLLECTIONS.STUDENTS),
+        where('cursoId', '==', cursoId),
+        where('activo', '==', true)
+      )
+    );
+    return snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .map((a) => ({
+        id: a.id,
+        nombre: a.nombre || '',
+        apellido: a.apellido || '',
+        cursoId: a.cursoId || '',
+      }))
+      .sort((a, b) => a.apellido.localeCompare(b.apellido, 'es') || a.nombre.localeCompare(b.nombre, 'es'));
+  } catch {
+    return [];
+  }
+}
+
 /** Alumnos activos de los cursos a cargo, ordenados por apellido y nombre. */
 export async function alumnosDeMisCursos(user) {
   const cursosIds = await cursosDelStaff(user);
   if (!cursosIds.length) return { cursosIds: [], alumnos: [] };
 
-  const grupos = await Promise.all(
-    cursosIds.map(async (cursoId) => {
-      try {
-        // Sin orderBy: dos filtros de igualdad no necesitan índice compuesto,
-        // y el orden se hace acá con localeCompare('es'), que ubica bien los
-        // acentos (Álvarez va con la A, no después de la Z).
-        const snap = await getDocs(
-          query(
-            collection(db, COLLECTIONS.STUDENTS),
-            where('cursoId', '==', cursoId),
-            where('activo', '==', true)
-          )
-        );
-        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      } catch {
-        return [];
-      }
-    })
-  );
+  const grupos = await Promise.all(cursosIds.map((cursoId) => alumnosDeCursoReal(cursoId)));
 
-  const alumnos = grupos
-    .flat()
-    .map((a) => ({
-      id: a.id,
-      nombre: a.nombre || '',
-      apellido: a.apellido || '',
-      cursoId: a.cursoId || '',
-    }))
-    .sort(
-      (a, b) =>
-        a.apellido.localeCompare(b.apellido, 'es') || a.nombre.localeCompare(b.nombre, 'es')
-    );
+  // Orden global (no solo por curso): el listado de Eventos agrupa por letra
+  // del apellido sobre esta lista, así que 3°1 y 3°2 tienen que quedar mezclados
+  // en orden alfabético, no uno detrás del otro.
+  const alumnos = grupos.flat().sort(
+    (a, b) =>
+      a.apellido.localeCompare(b.apellido, 'es') || a.nombre.localeCompare(b.nombre, 'es')
+  );
 
   return { cursosIds, alumnos };
 }

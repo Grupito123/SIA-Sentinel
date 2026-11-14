@@ -2,7 +2,7 @@
 //
 // El listado de Eventos está ordenado por APELLIDO (y agrupado por su
 // inicial), así que cada alumno se muestra "Apellido, Nombre": se lee de
-// corrido con el orden de la lista y con el filtro de letras.
+// corrido con el orden de la lista y con el agrupado de A a Z.
 //
 // Los datos REALES (Firestore) traen nombre y apellido por separado; la lista
 // de ejemplo de EventsScreen guarda el nombre completo en `student`
