@@ -1,0 +1,10 @@
+# Dependencias y artefactos de build (se regeneran con npm install / npm run build)
+node_modules/
+dist/
+.expo/
+*.log
+
+# Secretos: nunca se suben (la config de Firebase del cliente es pública, las .env no)
+.env
+.env.*
+!.env.example
